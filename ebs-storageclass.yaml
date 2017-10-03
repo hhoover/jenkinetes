@@ -1,0 +1,9 @@
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: amazonebs
+provisioner: kubernetes.io/aws-ebs
+parameters:
+  type: gp2
+  # specify zones your workers are in
+  zones: us-east-1a,us-east-1b,us-east-1c,us-east-1d,us-east-1e,us-east-1f

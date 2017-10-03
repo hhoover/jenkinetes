@@ -1,0 +1,72 @@
+#!/usr/bin/env groovy
+podTemplate(label: 'my-build-pod', containers: [
+    containerTemplate(name: 'jnlp', image: 'jenkinsci/jnlp-slave:alpine', alwaysPullImage: true),
+    // This image has kubectl installed for deployments
+    containerTemplate(name: 'kubectl', image: 'lachlanevenson/k8s-kubectl:v1.7.6', ttyEnabled: true, command: 'cat'),
+    // A docker container to build the image
+    containerTemplate(name: 'docker', image: 'docker', command: 'cat', ttyEnabled: true)]) {
+    node ('my-build-pod') {
+      def project = 'project'
+      def appName = 'sample-app'
+      def imageTag = "quay.io/${project}/${appName}:${env.BRANCH_NAME}.${env.BUILD_NUMBER}"
+        // Store ssh credentials in Jenkins, replace GITHUB_URL with a GitHub Repo
+        git branch: "${env.BRANCH_NAME}", credentialsId: "{{JENKINS_CREDENTIALS}}", url: '{{GITHUB_URL}}'
+
+        stage 'Build docker image'
+        container('docker') {
+            sh("docker build -t ${imageTag} .")
+        }
+        
+        stage 'Run Go tests'
+        container('docker') {
+            sh("docker run ${imageTag} go test")
+        }
+
+        stage 'Push image to the registry'
+        container('docker') {
+            // Store these credentials in Jenkins
+            withCredentials([[
+                  $class: 'UsernamePasswordMultiBinding',
+                  credentialsId: '{{DOCKER_CREDENTIALS}}',
+                  usernameVariable: 'USERNAME',
+                  passwordVariable: 'PASSWORD'
+                ]]) {
+                sh """
+                    docker login -u $USERNAME -p $PASSWORD quay.io
+                    docker push ${imageTag}
+                """
+            }
+        }
+
+        stage 'Deploy app'
+        container('kubectl') {
+        // This uses a kubeconfig file stored as a Jenkins secret
+        withCredentials([[
+                $class: 'FileBinding',
+                credentialsId: 'k8s-credentials',
+                variable: 'KUBECONFIG'
+            ]]){
+            switch (env.BRANCH_NAME)
+            {
+                // Deploy to production
+                case "master":
+                    sh("kubectl --kubeconfig=$KUBECONFIG --namespace={{APP_NAMESPACE}} apply -f ./services.yaml")
+                    sh("kubectl --kubeconfig=$KUBECONFIG --namespace={{APP_NAMESPACE}} apply -f ./deployment.yaml")
+                    break
+                    
+                // Deploy to a development environment
+                default:
+                    // Create namespace if it doesn't exist
+                    sh("kubectl --kubeconfig=$KUBECONFIG get ns ${env.BRANCH_NAME} || kubectl --kubeconfig=$KUBECONFIG create ns ${env.BRANCH_NAME}")
+                    // Don't use public load balancing for development branches
+                    sh("sed -i.bak 's#LoadBalancer#ClusterIP#' ./services.yaml")
+                    sh("sed -i.bak 's#quay.io/${project}/${appName}:1.0.0#${imageTag}#' ./deployment.yaml")
+                    sh("kubectl --kubeconfig=$KUBECONFIG --namespace=${env.BRANCH_NAME} apply -f ./services.yaml")
+                    sh("kubectl --kubeconfig=$KUBECONFIG --namespace=${env.BRANCH_NAME} apply -f ./deployment.yaml")
+                    echo 'To access the environment run `kubectl proxy`'
+                    echo "Then access the service via http://localhost:8001/api/v1/proxy/namespaces/${env.BRANCH_NAME}/services/${appName}:80/"
+            }
+        }
+    }
+  }
+}

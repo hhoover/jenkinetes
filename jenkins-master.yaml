@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: 
+  name: jenkins-master-claim
+  namespace: jenkins
+  annotations: 
+    volume.beta.kubernetes.io/storage-class: amazonebs
+spec: 
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata: 
+  name: jenkins-master
+  namespace: jenkins
+  labels: 
+    name: jenkins-master
+spec: 
+  replicas: 1
+  template: 
+    metadata: 
+      name: jenkins-master
+      labels: 
+        name: jenkins-master
+    spec:
+      tolerations:
+        - key: "node-role.kubernetes.io/master"
+          operator: "Exists"
+          effect: "NoSchedule" 
+      containers: 
+        - name: jenkins-master
+          image: "jenkins/jenkins:lts"
+          ports: 
+            - containerPort: 8080
+            - containerPort: 50000
+          env:
+            - name: JAVA_OPTS
+              value: "-Dhudson.slaves.NodeProvisioner.MARGIN=50 -Dhudson.slaves.NodeProvisioner.MARGIN0=0.85"
+          volumeMounts: 
+            - name: jenkins-master-vol
+              mountPath: /var/jenkins_home
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            initialDelaySeconds: 60
+            timeoutSeconds: 5
+      securityContext:
+        fsGroup: 1000
+      volumes: 
+        - name: jenkins-master-vol
+          persistentVolumeClaim:
+            claimName: jenkins-master-claim
+---
+apiVersion: v1
+kind: Service
+metadata: 
+  name: jenkins-master-service
+  namespace: jenkins
+spec: 
+  type: LoadBalancer
+  selector: 
+    name: jenkins-master
+  ports: 
+    - 
+      name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+    - 
+      name: executor
+      port: 50000
+      protocol: TCP
